@@ -1,0 +1,28 @@
+[package]
+name = "app_wallet"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+sol-template-shared = {path = "../shared"}
+borsh = "0.9.3"
+lazy_static = "1.4.0"
+num-derive = "0.3"
+num_enum = "0.5.1"
+num-integer = "0.1.44"
+num-traits = "0.2"
+solana-program = "1.14.*"
+thiserror = "1.0"
+base64 = "0.21.0"
+
+
+[dev-dependencies]
+solana-program-test = "1.14.*"
+solana-sdk = "1.14.*"
+tokio = { version = "1", features = ["full"] }
+
+[lib]
+crate-type = ["cdylib", "lib"]
