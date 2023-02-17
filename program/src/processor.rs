@@ -77,7 +77,7 @@ fn wallet_new(accounts: &[AccountInfo]) -> ProgramResult {
     Ok(())
 }
 
-pub fn transfer(
+pub fn wallet_transfer_spl(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     _instruction_data: &[u8],
@@ -134,6 +134,23 @@ pub fn transfer(
     )
 }
 
+pub fn wallet_transfer_lamports(
+    accounts: &[AccountInfo],
+) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let source_info = next_account_info(account_info_iter)?;
+    let destination_info = next_account_info(account_info_iter)?;
+
+    msg!("-------------- wallet_transfer_lamports");
+
+    msg!("source_info {:?} {:?}", source_info.key, source_info.lamports);
+    msg!("destination_info {:?} {:?}", destination_info.key, destination_info.lamports);
+
+    **source_info.try_borrow_mut_lamports()? -= 5;
+    **destination_info.try_borrow_mut_lamports()? += 5;
+
+    Ok(())
+}
 
 /// Initialize the programs account, which is the first in accounts
 fn initialize_account(accounts: &[AccountInfo]) -> ProgramResult {
@@ -270,20 +287,23 @@ fn burn_keypair_from_account_with_fee(accounts: &[AccountInfo], key: String) -> 
 }
 /// Main processing entry point dispatches to specific
 /// instruction handlers
-pub fn process(
+pub fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     instruction_data: &[u8],
 ) -> ProgramResult {
     msg!("Received process request");
+    
     // Check the account for program relationship
     if let Err(error) = check_account_ownership(program_id, accounts) {
         return Err(error);
     }
+
     // Unpack the inbound data, mapping instruction to appropriate structure
     match ProgramInstruction::unpack(instruction_data)? {
         ProgramInstruction::WalletNew => wallet_new(accounts),
-        ProgramInstruction::Transfer => transfer(program_id, accounts, instruction_data),
+        ProgramInstruction::WalletTransferSpl => wallet_transfer_spl(program_id, accounts, instruction_data),
+        ProgramInstruction::WalletTransferLamports => wallet_transfer_lamports(accounts),
         ProgramInstruction::InitializeAccount => initialize_account(accounts),
         ProgramInstruction::MintToAccount(key, value) => {
             mint_keypair_to_account(accounts, key, value)
