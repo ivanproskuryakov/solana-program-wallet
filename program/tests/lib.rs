@@ -2,12 +2,24 @@ use sol_template_shared::{unpack_from_slice, ACCOUNT_STATE_SPACE};
 use app_wallet::{instruction::ProgramInstruction, processor::process};
 use solana_program::hash::Hash;
 use solana_program_test::*;
-use solana_sdk::{
-    account::Account,
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    transaction::Transaction,
+
+use {
+    solana_sdk::{
+        account::Account,
+        instruction::{AccountMeta, Instruction},
+        pubkey::Pubkey,
+        signature::{Keypair, Signer},
+        transaction::Transaction,
+    },
+    solana_program::{
+        program_pack::Pack,
+        rent::Rent,
+        system_instruction,
+    },
+    solana_program_test::{processor, tokio, ProgramTest},
+    app_wallet::processor::transfer,
+    spl_token::state::{Account as TokenAccount, Mint},
+    std::str::FromStr,
 };
 
 /// Sets up the Program test and initializes 'n' program_accounts
@@ -53,6 +65,149 @@ async fn submit_txn(
     banks_client.process_transaction(transaction).await
 }
 
+#[tokio::test]
+async fn test_transfer() {
+    // Setup some pubkeys for the accounts
+    let program_id = Pubkey::from_str("TransferTokens11111111111111111111111111111").unwrap();
+    let source = Keypair::new();
+    let mint = Keypair::new();
+    let destination = Keypair::new();
+    let (authority_pubkey, _) = Pubkey::find_program_address(&[b"authority"], &program_id);
+
+    // Add the program to the test framework
+    let program_test = ProgramTest::new(
+        "transfer",
+        program_id,
+        processor!(transfer),
+    );
+    let amount = 10_000;
+    let decimals = 9;
+    let rent = Rent::default();
+
+    // Start the program test
+    let (mut banks_client, payer, recent_blockhash) = program_test.start().await;
+
+    // Setup the mint, used in `spl_token::instruction::transfer_checked`
+    let transaction = Transaction::new_signed_with_payer(
+        &[
+            system_instruction::create_account(
+                &payer.pubkey(),
+                &mint.pubkey(),
+                rent.minimum_balance(Mint::LEN),
+                Mint::LEN as u64,
+                &spl_token::id(),
+            ),
+            spl_token::instruction::initialize_mint(
+                &spl_token::id(),
+                &mint.pubkey(),
+                &payer.pubkey(),
+                None,
+                decimals,
+            )
+            .unwrap(),
+        ],
+        Some(&payer.pubkey()),
+        &[&payer, &mint],
+        recent_blockhash,
+    );
+    banks_client.process_transaction(transaction).await.unwrap();
+
+    // Setup the source account, owned by the program-derived address
+    let transaction = Transaction::new_signed_with_payer(
+        &[
+            system_instruction::create_account(
+                &payer.pubkey(),
+                &source.pubkey(),
+                rent.minimum_balance(TokenAccount::LEN),
+                TokenAccount::LEN as u64,
+                &spl_token::id(),
+            ),
+            spl_token::instruction::initialize_account(
+                &spl_token::id(),
+                &source.pubkey(),
+                &mint.pubkey(),
+                &authority_pubkey,
+            )
+            .unwrap(),
+        ],
+        Some(&payer.pubkey()),
+        &[&payer, &source],
+        recent_blockhash,
+    );
+    banks_client.process_transaction(transaction).await.unwrap();
+
+    // Setup the destination account, used to receive tokens from the account
+    // owned by the program-derived address
+    let transaction = Transaction::new_signed_with_payer(
+        &[
+            system_instruction::create_account(
+                &payer.pubkey(),
+                &destination.pubkey(),
+                rent.minimum_balance(TokenAccount::LEN),
+                TokenAccount::LEN as u64,
+                &spl_token::id(),
+            ),
+            spl_token::instruction::initialize_account(
+                &spl_token::id(),
+                &destination.pubkey(),
+                &mint.pubkey(),
+                &payer.pubkey(),
+            )
+            .unwrap(),
+        ],
+        Some(&payer.pubkey()),
+        &[&payer, &destination],
+        recent_blockhash,
+    );
+    banks_client.process_transaction(transaction).await.unwrap();
+
+    // Mint some tokens to the PDA account
+    let transaction = Transaction::new_signed_with_payer(
+        &[spl_token::instruction::mint_to(
+            &spl_token::id(),
+            &mint.pubkey(),
+            &source.pubkey(),
+            &payer.pubkey(),
+            &[],
+            amount,
+        )
+        .unwrap()],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+    banks_client.process_transaction(transaction).await.unwrap();
+
+    // Create an instruction following the account order expected by the program
+    let transaction = Transaction::new_signed_with_payer(
+        &[Instruction::new_with_bincode(
+            program_id,
+            &(),
+            vec![
+                AccountMeta::new(source.pubkey(), false),
+                AccountMeta::new_readonly(mint.pubkey(), false),
+                AccountMeta::new(destination.pubkey(), false),
+                AccountMeta::new_readonly(authority_pubkey, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+            ],
+        )],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    // See that the transaction processes successfully
+    banks_client.process_transaction(transaction).await.unwrap();
+
+    // Check that the destination account now has `amount` tokens
+    let account = banks_client
+        .get_account(destination.pubkey())
+        .await
+        .unwrap()
+        .unwrap();
+    let token_account = TokenAccount::unpack(&account.data).unwrap();
+    assert_eq!(token_account.amount, amount);
+}
 
 #[tokio::test]
 /// Wallet new test
@@ -64,7 +219,11 @@ async fn test_wallet_new() {
     println!("{:?}", account_pubkey);
 
     // Setup runtime testing and accounts
-    let (mut banks_client, payer, recent_blockhash) = setup(&program_id, &[account_pubkey]).await;
+    let (
+        mut banks_client, 
+        payer, 
+        recent_blockhash
+    ) = setup(&program_id, &[account_pubkey]).await;
     
     let _result = submit_txn(
         &program_id,
@@ -87,12 +246,13 @@ async fn test_wallet_new() {
     .await;
 
     // Check the data
-    let (_is_initialized, btree_map) = match banks_client.get_account(account_pubkey).await.unwrap()
+    let (is_initialized, btree_map) = match banks_client.get_account(account_pubkey).await.unwrap()
     {
         Some(account) => unpack_from_slice(&account.data).unwrap(),
         None => panic!(),
     };
 
+    println!(">>>>> {:?}", is_initialized);
     println!(">>>>> {:?}", btree_map);
     println!(">>>>> {:?}", result.is_ok());
 }

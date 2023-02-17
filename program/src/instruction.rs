@@ -6,6 +6,7 @@ use solana_program::{borsh::try_from_slice_unchecked, program_error::ProgramErro
 pub enum ProgramInstruction {
     InitializeAccount,
     WalletNew,
+    Transfer,
     MintToAccount(String, String),
     TransferBetweenAccounts(String),
     BurnFromAccount(String),
@@ -22,6 +23,7 @@ impl ProgramInstruction {
         match payload {
             ProgramInstruction::InitializeAccount => Ok(payload),
             ProgramInstruction::WalletNew => Ok(payload),
+            ProgramInstruction::Transfer => Ok(payload),
             ProgramInstruction::MintToAccount(_, _) => Ok(payload),
             ProgramInstruction::TransferBetweenAccounts(_) => Ok(payload),
             ProgramInstruction::BurnFromAccount(_) => Ok(payload),
